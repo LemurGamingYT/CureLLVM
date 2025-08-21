@@ -9,7 +9,7 @@ from cure.codegen_utils import cast_value
 
 
 class Math(LibType):
-    def init_type(self):
+    def init(self):
         @function(self, ret_type=self.scope.type_map.get('float'),
                   flags=FunctionFlags(static=True, property=True))
         def pi(ctx: DefinitionContext):

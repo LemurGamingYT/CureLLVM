@@ -35,9 +35,9 @@ class Position:
     def comptime_error(self, msg: str, src: str):
         print(src.splitlines()[self.line - 1])
         print(' ' * self.column + '^')
-        print(f'{Style.BRIGHT}{Fore.RED}error: {msg}{Style.RESET_ALL}')
+        print(f'{Style.BRIGHT}{Fore.RED}error at line {self.line}: {msg}{Style.RESET_ALL}')
         error(msg)
-        raise NotImplementedError
+        # raise NotImplementedError
         sys_exit(1)
 
 # TODO: I don't like this solution ;-;
@@ -117,52 +117,62 @@ class Scope:
 
     def __post_init__(self):
         if self.parent is not None:
+            info('Initialising child scope')
+
             self.src = self.parent.src
             self.dependencies = self.parent.dependencies
 
             self.symbol_table = self.parent.symbol_table.clone()
             self.type_map = self.parent.type_map.clone()
+
+            info('Initialised child scope')
         else:
             self.src = self.file.read_text('utf-8')
+
+            info('Initialising global scope')
 
             info('Adding types')
 
             Ref_type = lir.global_context.get_identified_type('Ref')
             Ref_type.set_body(
-                lir.IntType(8).as_pointer(), # void*
-                lir.FunctionType(
-                    lir.IntType(8).as_pointer(),
-                    [lir.IntType(8).as_pointer()]
-                ).as_pointer(), # nil (*destroy)(void*)
+                lir.PointerType(lir.IntType(8)), # void*
+                lir.PointerType(lir.FunctionType(
+                    lir.PointerType(lir.IntType(8)),
+                    [lir.PointerType(lir.IntType(8))]
+                )), # function pointer nil (*destroy)(void*)
                 lir.IntType(64), # size_t
             )
 
             string_type = lir.global_context.get_identified_type('string')
             string_type.set_body(
-                lir.IntType(8).as_pointer(), # ptr
+                lir.PointerType(lir.IntType(8)), # ptr
                 lir.IntType(64), # length
-                Ref_type.as_pointer() # ref
+                lir.PointerType(Ref_type) # ref
             )
 
             self.type_map.add('int', lir.IntType(32))
             self.type_map.add('float', lir.FloatType())
             self.type_map.add('string', string_type)
             self.type_map.add('bool', lir.IntType(1))
-            self.type_map.add('nil', lir.IntType(8).as_pointer())
-            self.type_map.add('any', lir.IntType(8).as_pointer())
-            self.type_map.add('pointer', lir.IntType(8).as_pointer())
-            self.type_map.add('function', lir.IntType(8).as_pointer())
+            self.type_map.add('nil', lir.PointerType(lir.IntType(8)))
+            self.type_map.add('any', lir.PointerType(lir.IntType(8)))
+            self.type_map.add('pointer', lir.PointerType(lir.IntType(8)))
+            self.type_map.add('function', lir.PointerType(lir.IntType(8)))
             self.type_map.add('Ref', Ref_type)
             self.type_map.add('any_function', lir.FunctionType(
-                lir.IntType(8).as_pointer(),
-                [lir.IntType(8).as_pointer()]
+                lir.PointerType(lir.IntType(8)),
+                [lir.PointerType(lir.IntType(8))]
             ).as_pointer())
 
-            self.type_map.add('Math', lir.IntType(8).as_pointer())
+            self.type_map.add('Math', lir.PointerType(lir.IntType(8)))
 
             info('Added types')
 
+            info('Using builtins')
             self.use('builtins', Position.zero())
+            info('Used builtins')
+
+            info('Initialised global scope')
 
     def clone(self):
         return Scope(self.file, self)
@@ -174,6 +184,7 @@ class Scope:
     
     def use(self, name: str, pos: Position):
         if name in self.dependencies:
+            info(f'Library {name} already used')
             return
         
         path = STDLIB_PATH / name
@@ -191,6 +202,7 @@ class Scope:
             else:
                 module = import_module(f'cure.stdlib.{name}.{name}')
             
+            info(f'Found python module {module.__file__}')
             getattr(module, name)(self)
 
         # TODO: use [name].ptl file
@@ -247,20 +259,8 @@ class Node(ABC):
 class Type(Node):
     type: lir.Type
     display: str
-    ref_target: Union['Type', None] = None
-
-    @property
-    def is_pointer(self):
-        return isinstance(self.type, lir.PointerType) and self.display.endswith('*')
-    
-    @property
-    def is_reference(self):
-        return isinstance(self.type, lir.PointerType) and self.display.endswith('&')
     
     def __str__(self):
-        return self.display
-    
-    def __repr__(self):
         return self.display
     
     def needs_memory_management(self, scope: Scope):
@@ -268,16 +268,26 @@ class Type(Node):
             return False
 
         Ref = cast(Type, scope.type_map.get('Ref'))
-        if not any(elem == Ref.type.as_pointer() for elem in self.type.elements):
+        if not any(elem == lir.PointerType(Ref.type) for elem in self.type.elements):
             return False
 
         return True
-
-    def as_pointer(self):
-        return Type(self.pos, self.type.as_pointer(), f'{self.display}*')
     
-    def reference(self):
-        return Type(self.pos, self.type.as_pointer(), f'{self.display}&', self)
+    def as_pointer(self):
+        return PointerType(self.pos, self.type.as_pointer(), self.display, self)
+
+@dataclass
+class PointerType(Type):
+    pointee: Type
+
+    def __str__(self):
+        return f'{self.pointee}*'
+    
+    def needs_memory_management(self, scope: Scope):
+        return self.pointee.needs_memory_management(scope)
+    
+    def as_pointer(self):
+        return self
 
 @dataclass
 class Program(Node):
@@ -388,6 +398,25 @@ class Function(Node):
     def ret_type(self):
         return self.type
     
+    @staticmethod
+    def _check_params(scope: Scope, param_types: list[Type], arg_types: list[Type]):
+        # check if the parameter types list and argument types list match in length
+        if len(param_types) != len(arg_types):
+            return False
+        
+        # loop through each parameter and argument types
+        for param_type, arg_type in zip(param_types, arg_types):
+            # for each parameter, check the following:
+            # - if the parameter is an any type, if so, immediately allow the parameter
+            any_type = scope.type_map.get('any')
+            if param_type == any_type:
+                continue
+
+            # - if the parameter type matches the argument type
+            if arg_type != param_type:
+                return False
+        
+        return True
     
     def compile(
         self, pos: Position, module: lir.Module, scope: Scope, arg_types: list[Type]
@@ -437,42 +466,20 @@ class Function(Node):
         info(f'Compiled {callee}')
         return ir_func
     
-    @staticmethod
-    def _check_params(scope: Scope, param_types: list[Type], arg_types: list[Type]):
-        # check if the parameter types list and argument types list match in length
-        if len(param_types) != len(arg_types):
-            return False
-        
-        # loop through each parameter and argument types
-        for param_type, arg_type in zip(param_types, arg_types):
-            # for each parameter, check the following:
-            # - if the parameter is an any type, if so, immediately allow the parameter
-            any_type = scope.type_map.get('any')
-            if param_type == any_type:
-                continue
-            
-            # - if the parameter is a reference type, if so, remove the reference and carry on
-            if param_type.is_reference:
-                param_type = cast(Type, param_type.ref_target)
-
-            # - if the parameter type matches the argument type
-            if arg_type != param_type:
-                return False
-        
-        return True
-    
     def __call__(
-        self, pos: Position, scope: Scope, args: list[Any],
+        self, pos: Position, scope: Scope, args: list[CallArgument],
         module: lir.Module | None = None, builder: lir.IRBuilder | None = None
     ):
         arg_types = [arg.type for arg in args]
+        param_types = [param.type for param in self.params]
 
         # check if the main function matches the argument types
-        if self._check_params(scope, [param.type for param in self.params], arg_types):
+        if self._check_params(scope, param_types, arg_types):
             func = self
         else:
             # for each overload, call _check_params, if none match, produce an error
             for overload in self.overloads:
+                info(f'Checking overload {overload.name}')
                 if not self._check_params(scope, [param.type for param in overload.params], arg_types):
                     continue
 
@@ -480,18 +487,15 @@ class Function(Node):
                 break
             else:
                 arg_types_str = ', '.join(map(str, arg_types))
+                param_types_str = ', '.join(map(str, param_types))
                 error(
                     f'no matching overloads for argument types [{arg_types_str}]'\
                         f' for function call to {self.name}'
                 )
 
-                info(f'Args: {args}')
                 info(f'Argument types {arg_types}')
-                info(f'Parameter Types: [{", ".join(str(param.type) for param in self.params)}]')
+                info(f'Parameter Types: [{param_types_str}]')
                 info(f'Num Overloads: {len(self.overloads)}')
-                if self.overloads:
-                    info(f'Overload Names: [{", ".join(overload.name for overload in self.overloads)}]')
-
                 pos.comptime_error(
                     f'no matching overloads [{arg_types_str}]', scope.src
                 )
@@ -501,19 +505,11 @@ class Function(Node):
         if module is not None and builder is not None:
             info(f'Code generation call to {func.name}')
             ir_func = func.compile(pos, module, scope, arg_types)
-            call_args = []
-            for arg, param in zip(args, func.params):
-                if isinstance(arg.value, lir.LoadInstr) and param.type.is_reference:
-                    ptr = arg.value.operands[0]
-                    call_args.append(ptr)
-                else:
-                    call_args.append(arg.value)
-
-            return builder.call(ir_func, call_args)
+            return builder.call(ir_func, [arg.value for arg in args])
         # otherwise, the call is an IR call, return the Call node
         else:
             info(f'IR call to {func.name}')
-            return Call(pos, func.ret_type, self.name, args)
+            return Call(pos, func.ret_type, self.name, cast(list, args))
 
 @dataclass
 class Return(Node):

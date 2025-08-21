@@ -47,7 +47,7 @@ class CodeGeneration(CompilerPass):
     
     def _decrement_reference(self, pos: ir.Position, struct, type: ir.Type):
         Ref = cast(ir.Type, self.scope.type_map.get('Ref'))
-        ref_index = index_of_type(type.type, Ref.type.as_pointer())
+        ref_index = index_of_type(type.type, lir.PointerType(Ref.type))
         if ref_index == -1:
             warning(f'Type {type} needs memory management but has no Ref* field')
             return
@@ -62,7 +62,7 @@ class CodeGeneration(CompilerPass):
     
     def _increment_reference(self, pos: ir.Position, struct, type: ir.Type):
         Ref = cast(ir.Type, self.scope.type_map.get('Ref'))
-        ref_index = index_of_type(type.type, Ref.type.as_pointer())
+        ref_index = index_of_type(type.type, lir.PointerType(Ref.type))
         if ref_index == -1:
             warning(f'Type {type} needs memory management but has no Ref* field')
         else:
@@ -72,11 +72,8 @@ class CodeGeneration(CompilerPass):
             ])
     
     def run_on(self, node: ir.Node):
-        if isinstance(node, DONT_MANAGE_MEMORY):
-            return super().run_on(node)
-
         node_type = node.type
-        if not node_type.needs_memory_management(self.scope):
+        if isinstance(node, DONT_MANAGE_MEMORY) or not node_type.needs_memory_management(self.scope):
             return super().run_on(node)
         
         value = super().run_on(node)
@@ -86,9 +83,9 @@ class CodeGeneration(CompilerPass):
         if isinstance(value.type, (lir.LiteralStructType, lir.IdentifiedStructType)):
             self._increment_reference(node.pos, value, node_type)
 
-        ptr = store_in_pointer(self.builder, node_type.type, value, 'memory_var')
+        ptr = store_in_pointer(self.builder, node_type.type, value, 'temp_var')
         self.scope.symbol_table.add(ir.Symbol(ptr.name, node_type, ptr))
-        return self.builder.load(ptr, 'temp_mem')
+        return self.builder.load(ptr, 'temp')
     
     def run_on_Type(self, node: ir.Type):
         return node.type
@@ -313,7 +310,7 @@ class CodeGeneration(CompilerPass):
         # it's use because it will never change, it's basically a constant
         if node.is_mutable:
             symbol_value = store_in_pointer(
-                self.builder, self.run_on(node.type), symbol_value, f'{node.name}_ptr'
+                self.builder, self.run_on(node.type), symbol_value, node.name
             )
         
         self.scope.symbol_table.add(ir.Symbol(node.name, node.type, symbol_value, node.is_mutable))
@@ -329,8 +326,8 @@ class CodeGeneration(CompilerPass):
         return self.builder.store(value, ptr)
     
     def run_on_Return(self, node: ir.Return):
-        if self.return_value is not None:
-            node.pos.comptime_error('cannot return twice', self.scope.src)
+        # if self.return_value is not None:
+        #     node.pos.comptime_error('cannot return twice', self.scope.src)
         
         value = self.run_on(node.value)
         self.return_value = value
@@ -376,12 +373,16 @@ class CodeGeneration(CompilerPass):
         
         args = [self.run_on(arg) for arg in node.args]
         if isinstance(symbol.value, ir.Function):
-            call_args = [ir.CallArgument(arg, n.type) for arg, n in zip(args, node.args)]
-            return symbol.value(node.pos, self.scope, call_args, self.module, self.builder)
+            return symbol.value(node.pos, self.scope, [
+                ir.CallArgument(arg, arg_type) for arg, arg_type in zip(args, [
+                    arg.type for arg in node.args
+                ])
+            ], self.module, self.builder)
         elif isinstance(symbol.value, lir.Function):
-            return self.builder.call(symbol.value, args)
-
-        node.pos.comptime_error(f'invalid callable {node.callee}', self.scope.src)
+            ir_func = symbol.value
+            return self.builder.call(ir_func, args, node.callee)
+        else:
+            node.pos.comptime_error(f'invalid callable {node.callee}', self.scope.src)
     
     def run_on_BinaryOp(self, _):
         raise NotImplementedError

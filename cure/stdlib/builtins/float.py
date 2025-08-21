@@ -8,7 +8,7 @@ from cure.lib import function, LibType, DefinitionContext
 
 
 class float(LibType):
-    def init_type(self):
+    def init(self):
         BUF_SIZE = 64
 
         @function(

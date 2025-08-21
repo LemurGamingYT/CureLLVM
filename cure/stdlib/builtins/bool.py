@@ -8,7 +8,7 @@ from cure.lib import function, LibType, DefinitionContext
 
 
 class bool(LibType):
-    def init_type(self):
+    def init(self):
         @function(
             self, [Param(Position.zero(), self.scope.type_map.get('bool'), 'b')],
             self.scope.type_map.get('string'), flags=FunctionFlags(method=True)

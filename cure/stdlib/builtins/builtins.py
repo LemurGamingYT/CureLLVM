@@ -18,13 +18,13 @@ from cure.codegen_utils import (
 
 
 class builtins(Lib):
-    def init_lib(self):
-        self.add_lib(Ref)
-        self.add_type(Math)
-        self.add_type(string)
-        self.add_type(intType)
-        self.add_type(boolType)
-        self.add_type(floatType)
+    def init(self):
+        self.add(Ref)
+        self.add(Math)
+        self.add(string)
+        self.add(intType)
+        self.add(boolType)
+        self.add(floatType)
 
         @function(self, [Param(Position.zero(), self.scope.type_map.get('string'), 'message')],
                 flags=FunctionFlags(public=True))
@@ -101,8 +101,10 @@ class builtins(Lib):
                 CallArgument(input_len_i32, cast(Type, self.scope.type_map.get('int')))
             ])
         
-        @overload(input, [Param(Position.zero(), self.scope.type_map.get('string'), 'prompt')],
-                self.scope.type_map.get('string'))
+        @overload(
+            input, [Param(Position.zero(), self.scope.type_map.get('string'), 'prompt')],
+            self.scope.type_map.get('string')
+        )
         def input_prompt(ctx: DefinitionContext):
             prompt = ctx.param_value('prompt')
 

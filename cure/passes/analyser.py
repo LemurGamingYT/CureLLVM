@@ -1,4 +1,3 @@
-from pprint import pformat
 from logging import info
 from typing import cast
 
@@ -13,14 +12,11 @@ INT_MIN = min_value(32)
 
 class Analyser(CompilerPass):
     def run_on_Program(self, node: ir.Program):
-        info(f'Analysing program {pformat(node, indent=4)}')
-
         nodes = []
         for n in node.nodes:
             info(f'Analysing {n.__class__.__name__}')
             nodes.append(self.run_on(n))
         
-        info(f'Finished analysing program {pformat(node, indent=4)}')
         return ir.Program(node.pos, node.type, nodes)
     
     def run_on_Type(self, node: ir.Type):

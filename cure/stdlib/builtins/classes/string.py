@@ -5,13 +5,12 @@ from llvmlite import ir as lir
 from cure.ir import Param, Position, Type, FunctionFlags, CallArgument
 from cure.lib import function, LibType, DefinitionContext
 from cure.codegen_utils import (
-    get_struct_value_field, create_struct_value, cast_value, NULL_BYTE, zero, NULL,
-    get_struct_ptr_field, get_struct_ptr_field_value
+    get_struct_value_field, create_struct_value, cast_value, NULL_BYTE, zero, NULL
 )
 
 
 class string(LibType):
-    def init_type(self):
+    def init(self):
         @function(self, [
             Param(Position.zero(), self.scope.type_map.get('pointer'), 'literal'),
             Param(Position.zero(), self.scope.type_map.get('int'), 'length')
@@ -30,16 +29,16 @@ class string(LibType):
             tot_length = ctx.builder.add(length, one)
             data_ptr = ctx.builder.bitcast(
                 ctx.builder.call(malloc, [tot_length]),
-                lir.IntType(8).as_pointer()
+                lir.PointerType(lir.IntType(8))
             )
             ctx.builder.call(memcpy, [data_ptr, literal, length])
 
             null_ptr = ctx.builder.gep(data_ptr, [length])
             ctx.builder.store(NULL_BYTE(), null_ptr)
 
-            func_ptr_type = lir.FunctionType(
-                lir.IntType(8).as_pointer(), [lir.IntType(8).as_pointer()]
-            ).as_pointer()
+            func_ptr_type = lir.PointerType(lir.FunctionType(
+                lir.PointerType(lir.IntType(8)), [lir.PointerType(lir.IntType(8))]
+            ))
             null_func_ptr = lir.Constant(func_ptr_type, None)
             
             ref = ctx.call('Ref.new', [
@@ -120,30 +119,6 @@ class string(LibType):
                 cast(Type, self.scope.type_map.get('float')).type
             )
         
-        @function(self, [
-            Param(Position.zero(), self.scope.type_map.get('string').reference(), 's'),
-            Param(Position.zero(), self.scope.type_map.get('int'), 'index'),
-            Param(Position.zero(), self.scope.type_map.get('string'), 'value')
-        ], flags=FunctionFlags(method=True))
-        def set(ctx: DefinitionContext):
-            s = ctx.param_value('s')
-            index = ctx.param_value('index')
-            value = ctx.param_value('value')
-
-            length = get_struct_ptr_field_value(ctx.builder, s, 1)
-            length_i32 = cast_value(ctx.builder, length, lir.IntType(32))
-            with ctx.builder.if_then(ctx.builder.icmp_signed('>', index, length_i32)):
-                ctx.error('string index out of bounds')
-            
-            with ctx.builder.if_then(ctx.builder.icmp_signed('<', index, zero(32))):
-                index = ctx.builder.add(length_i32, index)
-            
-            ptr = get_struct_ptr_field(ctx.builder, s, 0)
-            index_ptr = ctx.builder.gep(ptr, [index])
-
-            value_ptr = get_struct_value_field(ctx.builder, value, 0)
-            ctx.builder.store(value_ptr, index_ptr)
-
 
         @function(self, [
             Param(Position.zero(), self.scope.type_map.get('string'), 'a'),
