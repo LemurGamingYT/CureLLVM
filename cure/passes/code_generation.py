@@ -90,6 +90,12 @@ class CodeGeneration(CompilerPass):
     def run_on_Type(self, node: ir.Type):
         return node.type
     
+    def run_on_PointerType(self, node: ir.PointerType):
+        return lir.PointerType(self.run_on(node.pointee))
+
+    def run_on_ReferenceType(self, node: ir.ReferenceType):
+        return self.run_on_Type(node.target)
+    
     def run_on_Program(self, node: ir.Program):
         info('Compiling program')
         for n in node.nodes:

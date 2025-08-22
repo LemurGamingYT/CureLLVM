@@ -22,7 +22,6 @@ op_map = {
 }
 
 
-
 @dataclass
 class Position:
     line: int
@@ -275,6 +274,9 @@ class Type(Node):
     
     def as_pointer(self):
         return PointerType(self.pos, self.type.as_pointer(), self.display, self)
+    
+    def as_reference(self):
+        return ReferenceType(self.pos, self.type.as_pointer(), self.display, self)
 
 @dataclass
 class PointerType(Type):
@@ -285,9 +287,16 @@ class PointerType(Type):
     
     def needs_memory_management(self, scope: Scope):
         return self.pointee.needs_memory_management(scope)
+
+@dataclass
+class ReferenceType(Type):
+    target: Type
+
+    def __str__(self):
+        return f'{self.target}&'
     
-    def as_pointer(self):
-        return self
+    def needs_memory_management(self, scope: Scope):
+        return self.target.needs_memory_management(scope)
 
 @dataclass
 class Program(Node):
@@ -452,7 +461,8 @@ class Function(Node):
             
             def_scope.symbol_table.add(Symbol(param.name, ir_type, value))
         
-        info(f'Added parameters to scope: {params}')
+        params_str = ', '.join(f'{param.name} (type {param.type})' for param in params)
+        info(f'Added parameters to scope: {params_str}')
         info(f'Compiling {callee}')
         if self.body is not None and callable(self.body):
             result = self.body(ctx)

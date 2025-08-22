@@ -1,3 +1,7 @@
+fn test(int& i) {
+    print(i)
+}
+
 fn main() -> int {
     return 0
 }

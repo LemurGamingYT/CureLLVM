@@ -176,6 +176,9 @@ class CureIRBuilder(CureVisitor):
         )
     
     def visitType(self, ctx):
+        if ctx.AMPERSAND() is not None:
+            return self.visit(ctx.type_()).as_reference()
+        
         return self.scope.type_map.get(ctx.ID().getText())
     
     def visitUnary(self, ctx):

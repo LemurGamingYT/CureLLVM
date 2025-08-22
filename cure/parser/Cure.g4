@@ -4,6 +4,7 @@ parse: stmt* EOF;
 
 type
     : ID
+    | type AMPERSAND
     ;
 
 stmt
@@ -104,6 +105,7 @@ LBRACK: '[';
 RBRACK: ']';
 RARROW: '<-';
 RETURNS: '->';
+AMPERSAND: '&';
 
 COMMENT: '//' .*? '\n' -> skip;
 MULTILINE_COMMENT: '/*' .*? '*/' -> skip;

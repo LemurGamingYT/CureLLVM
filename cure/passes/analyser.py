@@ -22,6 +22,12 @@ class Analyser(CompilerPass):
     def run_on_Type(self, node: ir.Type):
         return node
     
+    def run_on_PointerType(self, node: ir.PointerType):
+        return self.run_on_Type(node.pointee)
+    
+    def run_on_ReferenceType(self, node: ir.ReferenceType):
+        return self.run_on_Type(node.target)
+    
     def run_on_Param(self, node: ir.Param):
         return ir.Param(node.pos, self.run_on(node.type), node.name, node.is_mutable)
     
