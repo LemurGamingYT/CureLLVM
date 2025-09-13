@@ -1,7 +1,4 @@
-fn test(int& i) {
-    print(i)
-}
-
 fn main() -> int {
+    print(10)
     return 0
 }

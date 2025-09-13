@@ -1,9 +1,13 @@
+from ctypes import CFUNCTYPE, c_int
 from dataclasses import dataclass
 from sys import exit as sys_exit
-from logging import debug, info
+from time import perf_counter
 from subprocess import run
+from logging import info
 from pathlib import Path
 from typing import cast
+
+from llvmlite import binding as llvm
 
 from cure.passes.code_generation import CodeGeneration
 from cure.parser.ir_builder import CureIRBuilder
@@ -15,6 +19,7 @@ HELP = """usage: cure [action] [options]
 
 actions: build, help
 """
+
 
 @dataclass
 class CompileOptions:
@@ -36,7 +41,6 @@ def compile_to_str(scope: ir.Scope, options: CompileOptions):
 def compile_to_ll(scope: ir.Scope, options: CompileOptions):
     info(f'Compiling {scope.file.as_posix()} to an LLVM IR file (.ll)')
     code = compile_to_str(scope, options)
-    debug(f'LLVM IR = {code}')
     ll_file = scope.file.with_suffix('.ll')
     ll_file.write_text(code)
     info(f'Wrote to {ll_file.as_posix()}')
@@ -54,6 +58,24 @@ def compile_to_exe(scope: ir.Scope, options: CompileOptions):
     run(f'clang {ll_file.absolute().as_posix()} -o {exe_file} {flags_str}')
     return exe_file
 
+def jit(scope: ir.Scope, options: CompileOptions):
+    opt = 0 if not options.optimize else 2
+
+    ll_file = compile_to_ll(scope, options)
+    backing_mod = llvm.parse_assembly(ll_file.read_text())
+    target_machine = llvm.Target.from_default_triple().create_target_machine(opt=opt)
+    with llvm.create_mcjit_compiler(backing_mod, target_machine) as engine:
+        engine.finalize_object()
+
+        main_ptr = engine.get_function_address('main')
+        main = CFUNCTYPE(c_int)(main_ptr)
+
+        info('Running main function')
+        start = perf_counter()
+        res = main()
+        end = perf_counter()
+        info(f'Main function executed in {(end - start) * 1000:.3f}ms and returned {res}')
+
 
 class CureArgParser:
     def __init__(self, args: list[str]):
@@ -64,8 +86,7 @@ class CureArgParser:
             self.__help()
             return
         
-        action = self.get(1)
-        info(f'Found CLI action {action}')
+        action = self.args[1]
         match action:
             case 'build':
                 self.__build()
@@ -120,7 +141,30 @@ file is not a file""")
         
         optimize = self.flag('optimize')
         options = CompileOptions(optimize)
-        info(f'Building file {file.as_posix()} with options {options}')
 
         scope = ir.Scope(file)
         compile_to_exe(scope, options)
+    
+    def __run(self):
+        file_str = self.get(2)
+        if file_str is None:
+            print("""cure run [file]
+file argument not given""")
+            sys_exit(1)
+        
+        file = Path(file_str)
+        if not file.exists():
+            print("""cure run [file]
+file does not exist""")
+            sys_exit(1)
+        
+        if not file.is_file():
+            print("""cure run [file]
+file is not a file""")
+            sys_exit(1)
+        
+        optimize = self.flag('optimize')
+        options = CompileOptions(optimize)
+        
+        scope = ir.Scope(file)
+        jit(scope, options)

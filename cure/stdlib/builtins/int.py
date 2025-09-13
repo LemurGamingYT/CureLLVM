@@ -16,23 +16,22 @@ class int(LibType):
             self.scope.type_map.get('string'), flags=FunctionFlags(method=True)
         )
         def to_string(ctx: DefinitionContext):
-            buf_size = lir.Constant(lir.IntType(64), BUF_SIZE)
-
             snprintf = ctx.c_registry.get('snprintf')
 
-            x = ctx.param_value(0)
+            i = ctx.param_value('i')
 
-            buf = create_static_buffer(ctx.module, lir.IntType(8), BUF_SIZE)
-            fmt_ptr = create_string_constant(ctx.module, r'%d')
-            ctx.builder.call(snprintf, [buf, buf_size, fmt_ptr, x])
-
-            buf_size_i32 = cast_value(
-                ctx.builder, buf_size, cast(Type, self.scope.type_map.get('int')).type
+            buf_size = lir.Constant(lir.IntType(64), BUF_SIZE)
+            ctx.builder.comment('getting string buffer')
+            buf = create_static_buffer(
+                ctx.module, lir.IntType(8), BUF_SIZE, 'int_str_buf', ctx.builder
             )
 
+            ctx.builder.comment('getting string formatter')
+            fmt_ptr = create_string_constant(ctx.module, r'%d', 'int_fmt', ctx.builder)
+            written = ctx.builder.call(snprintf, [buf, buf_size, fmt_ptr, i], 'written')
             return ctx.call('string.new', [
                 CallArgument(buf, cast(Type, self.scope.type_map.get('pointer'))),
-                CallArgument(buf_size_i32, cast(Type, self.scope.type_map.get('int')))
+                CallArgument(written, cast(Type, self.scope.type_map.get('int')))
             ])
         
         @function(

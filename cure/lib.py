@@ -1,7 +1,7 @@
-from typing import Callable, Any, cast, TypeAlias, Union
+from typing import Callable, Any, cast, Union
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from logging import info
+from logging import info, debug
 
 from llvmlite import ir as lir
 
@@ -10,13 +10,11 @@ from cure.c_registry import CRegistry
 from cure import ir
 
 
-LibraryType: TypeAlias = Union['Lib', 'LibType', 'Class']
-
-def mangle_function_name(name: str, self: LibraryType):
-    if isinstance(self, (Class, LibType)):
+def get_method_name(self, name: str):
+    if isinstance(self, (Class, LibType)) and not name.startswith(f'{self.type}.'):
         return f'{self.type}.{name}'
-    
-    return name
+    else:
+        return name
 
 def function(self: Any, params: list[ir.Param] | None = None, ret_type: ir.Type | None = None,
              flags: ir.FunctionFlags | None = None, name: str | None = None):
@@ -32,23 +30,26 @@ def function(self: Any, params: list[ir.Param] | None = None, ret_type: ir.Type 
     def decorator(func):
         nonlocal name
 
-        name = mangle_function_name(name or func.__name__, self)
+        name = get_method_name(self, name or func.__name__)
+
         func.function = True
         func.name = name
         func.params = params
         func.ret_type = ret_type
         func.flags = flags
+        func.overloads = []
         func.self = self
 
         if self is not None:
+            setattr(self, name, func)
+
             self.scope.symbol_table.add(ir.Symbol(
-                name, cast(ir.Type, self.scope.type_map.get('function')), ir.Function(
+                name, self.scope.type_map.get('function'), ir.Function(
                     ir.Position.zero(), ret_type, name, params, func, flags
                 )
             ))
-            
-            setattr(self, name, func)
-            info(f'Registered function {name} to {self.__class__.__name__}')
+
+            info(f'Registered function {name}')
         
         return func
     
@@ -66,7 +67,7 @@ def overload(overload_of: Callable, params: list[ir.Param] | None = None,
         nonlocal name
         
         self = overload_of.self
-        name = mangle_function_name(name or func.__name__, self)
+        name = get_method_name(self, name or func.__name__)
 
         func.function = True
         func.name = name
@@ -76,33 +77,19 @@ def overload(overload_of: Callable, params: list[ir.Param] | None = None,
         func.overload_of = overload_of
 
         if self is not None:
-            base = self.scope.symbol_table.get(overload_of.name)
-            if base is None:
-                ir.Position.zero().comptime_error(
-                    f'Failed to register overload {name}: base function does not'\
-                        f'exist {overload_of.name}',
-                    self.scope.src
-                )
-            
-            base_func = base.value
-            if not isinstance(base_func, ir.Function):
-                ir.Position.zero().comptime_error(
-                    f'Failed to register overload {name}: base function is not a function',
-                    self.scope.src
-                )
-            
-            base_func.overloads.append(ir.Function(
+            setattr(self, name, func)
+
+            overload_of.overloads.append(ir.Function(
                 ir.Position.zero(), ret_type, name, params, func, func.flags
             ))
 
-            setattr(self, name, func)
-            info(f'Registered overload {name} to {self.__class__.__name__}')
+            info(f'Registered overload {name} (of {overload_of.name})')
         
         return func
     
     return decorator
 
-def getattrs(instance: LibraryType):
+def getattrs(instance):
     attrs = {}
     for k in dir(instance):
         v = getattr(instance, k)
@@ -112,6 +99,18 @@ def getattrs(instance: LibraryType):
         attrs[k] = v
     
     return attrs
+
+def add_instance(self, instance):
+    attrs = [attr.__name__ for attr in getattrs(instance).values()]
+    debug(f'Adding {attrs} (from instance {instance}) to {self}')
+
+    for v in getattrs(instance).values():
+        if (overload_of := getattr(v, 'overload_of', None)) is not None:
+            overload(overload_of, v.params, v.ret_type, v.name)(v)
+        else:
+            function(self, v.params, v.ret_type, v.flags, v.name)(v)
+
+        info(f'Added {v.name} from {self._name}')
 
 
 @dataclass
@@ -165,15 +164,16 @@ class DefinitionContext:
         err_msg = create_string_constant(self.module, message)
         err_string_struct = self.call('string.new', [
             ir.CallArgument(err_msg, cast(ir.Type, self.scope.type_map.get('pointer'))),
-            ir.CallArgument(lir.Constant(lir.IntType(32), len(message)),
-                         cast(ir.Type, self.scope.type_map.get('int')))
+            ir.CallArgument(
+                lir.Constant(lir.IntType(32), len(message)),
+                cast(ir.Type, self.scope.type_map.get('int'))
+            )
         ])
 
         self.call('error', [ir.CallArgument(
             err_string_struct, cast(ir.Type, self.scope.type_map.get('string'))
         )])
         
-        info(f'Inserted error with message: {message}')
         self.builder.unreachable()
 
 class Lib(ABC):
@@ -186,9 +186,10 @@ class Lib(ABC):
     def init(self):
         ...
 
-    def add(self, cls: type[LibraryType]):
+    def add(self, cls: type[Union['Lib', 'Class']]):
         instance = cls(self.scope)
-        info(f'Merged {self._name} and {instance._name} ({instance.__class__.__name__})')
+        add_instance(self, instance)
+        info(f'merged {self._name} and {instance._name} (Lib)')
 
 @dataclass
 class LibType:

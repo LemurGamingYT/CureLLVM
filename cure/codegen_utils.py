@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Optional
 
 from llvmlite import ir
 
@@ -31,7 +31,7 @@ def store_in_pointer(builder: ir.IRBuilder, type: ir.Type, value: ir.Value, name
     builder.store(value, ptr)
     return ptr
 
-def get_type_size(builder: ir.IRBuilder, llvm_type: ir.Type):
+def get_type_size(builder: ir.IRBuilder, llvm_type: ir.Type, name: str = ''):
     """Get the size of a type"""
     # Create a null pointer of the type
     null_ptr = ir.Constant(llvm_type.as_pointer(), None)
@@ -40,9 +40,7 @@ def get_type_size(builder: ir.IRBuilder, llvm_type: ir.Type):
     size_ptr = builder.gep(null_ptr, [ir.Constant(ir.IntType(32), 1)])
     
     # Convert pointer to integer to get the size
-    size = builder.ptrtoint(size_ptr, ir.IntType(64))
-    
-    return size
+    return builder.ptrtoint(size_ptr, ir.IntType(64), name)
 
 def index_of_type(type: ir.LiteralStructType, elem_type: ir.Type):
     """Find the index of a type in a LiteralStructType (returns -1 if the type is not found)"""
@@ -56,31 +54,31 @@ def index_of_type(type: ir.LiteralStructType, elem_type: ir.Type):
 
     return ref_index
 
-def cast_value(builder: ir.IRBuilder, value: ir.Value, type: ir.Type):
+def cast_value(builder: ir.IRBuilder, value: ir.Value, type: ir.Type, name: str = ''):
     """Converts the value to the type in any possible way"""
     value_type = value.type
     if isinstance(type, ir.IntType) and isinstance(value_type, ir.IntType):
         if type.width > value_type.width:
-            return builder.zext(value, type)
+            return builder.zext(value, type, name)
         elif type.width < value_type.width:
-            return builder.trunc(value, type)
+            return builder.trunc(value, type, name)
         else:
             # type.width == value_type.width
             return value
     elif isinstance(type, ir.FloatType) and isinstance(value_type, ir.IntType):
-        return builder.sitofp(value, type)
+        return builder.sitofp(value, type, name)
     elif isinstance(type, ir.IntType) and isinstance(value_type, ir.FloatType):
-        return builder.fptosi(value, type)
+        return builder.fptosi(value, type, name)
     elif isinstance(type, ir.DoubleType) and isinstance(value_type, ir.FloatType):
-        return builder.fpext(value, type)
+        return builder.fpext(value, type, name)
     elif isinstance(type, ir.FloatType) and isinstance(value_type, ir.DoubleType):
-        return builder.fptrunc(value, type)
+        return builder.fptrunc(value, type, name)
     elif isinstance(type, ir.IntType) and isinstance(value_type, ir.PointerType):
-        return builder.ptrtoint(value, type)
+        return builder.ptrtoint(value, type, name)
     elif isinstance(type, ir.PointerType) and isinstance(value_type, ir.IntType):
-        return builder.inttoptr(value, type)
+        return builder.inttoptr(value, type, name)
     else:
-        return builder.bitcast(value, type)
+        return builder.bitcast(value, type, name)
 
 def get_or_add_global(module: ir.Module, name: str, global_value: Any, **kwargs):
     """Gets or adds a global value"""
@@ -117,38 +115,51 @@ def allocate_struct(builder: ir.IRBuilder, struct_type: ir.Type, name: str = '')
     """Allocate space for a struct on the stack"""
     return builder.alloca(struct_type, name=name)
 
-def get_struct_ptr_field(builder: ir.IRBuilder, struct: ir.Value, field_index: int):
+def get_struct_ptr_field(builder: ir.IRBuilder, struct: ir.Value, field_index: int, name: str = ''):
     """Get pointer to a struct field (struct must be allocated)"""
     field_idx = ir.Constant(ir.IntType(32), field_index)
-    return builder.gep(struct, [zero(32), field_idx])
+    return builder.gep(struct, [zero(32), field_idx], name=name)
 
-def get_struct_ptr_field_value(builder: ir.IRBuilder, struct: ir.Value, field_index: int):
+def get_struct_ptr_field_value(
+    builder: ir.IRBuilder, struct: ir.Value, field_index: int, name: str = ''
+):
     """Get the value from a struct pointer's field (struct must be allocated)"""
-    ptr = get_struct_ptr_field(builder, struct, field_index)
-    return builder.load(ptr)
+    ptr = get_struct_ptr_field(builder, struct, field_index, f'{name}_ptr')
+    return builder.load(ptr, name)
 
-def get_struct_value_field(builder: ir.IRBuilder, struct: ir.Value, field_index: int):
+def get_struct_value_field(builder: ir.IRBuilder, struct: ir.Value, field_index: int, name: str = ''):
     """Extract a field value from a struct value"""
-    return builder.extract_value(struct, field_index)
+    return builder.extract_value(struct, field_index, name)
 
-def set_struct_field(builder: ir.IRBuilder, struct: ir.Value, field_index: int, value: ir.Value):
+def set_struct_field(
+    builder: ir.IRBuilder, struct: ir.Value, field_index: int, value: ir.Value, name: str = ''
+):
     """Set a field in a struct (struct must be allocated)"""
-    ptr = get_struct_ptr_field(builder, struct, field_index)
+    ptr = get_struct_ptr_field(builder, struct, field_index, name)
     builder.store(value, ptr)
 
 
-def create_string_constant(module: ir.Module, text: str, name: str = ''):
+def create_string_constant(
+    module: ir.Module, text: str, name: str = '', builder: Optional[ir.IRBuilder] = None
+):
     """Create a global string constant and return pointer to it"""
     if not text.endswith('\0'):
         text += '\0'
     
     const_type = ir.ArrayType(ir.IntType(8), len(text))
-    const = ir.GlobalVariable(module, const_type, name or module.get_unique_name('str'))
+    const = ir.GlobalVariable(
+        module, const_type,
+        module.get_unique_name('str')
+    )
+    
     const.initializer = ir.Constant(const_type, bytearray(text.encode('utf-8')))
     const.global_constant = True
     const.linkage = 'internal'
     
-    return ir.Constant.gep(const, [zero(32), zero(32)])
+    if builder is None:
+        return ir.Constant.gep(const, [zero(32), zero(32)])
+    else:
+        return builder.gep(const, [zero(32), zero(32)], True, name)
 
 def create_string_struct(module: ir.Module, builder: ir.IRBuilder, text: str, 
                         name: str = "") -> ir.Value:
@@ -194,13 +205,19 @@ def get_buffer_element(builder: ir.IRBuilder, buffer_ptr: ir.Value,
     element_ptr = get_buffer_element_ptr(builder, buffer_ptr, index)
     return builder.load(element_ptr)
 
-def create_static_buffer(module: ir.Module, element_type: ir.Type, size: int, name = ''):
+def create_static_buffer(
+    module: ir.Module, element_type: ir.Type, size: int, name = '',
+    builder: Optional[ir.IRBuilder] = None
+):
     buf_type = ir.ArrayType(element_type, size)
-    buf = ir.GlobalVariable(module, buf_type, name or module.get_unique_name())
+    buf = ir.GlobalVariable(module, buf_type, module.get_unique_name('buf'))
     buf.initializer = ir.Constant(buf_type, None)
     buf.linkage = 'internal'
 
-    return ir.Constant.gep(buf, [zero(32), zero(32)])
+    if builder is None:
+        return ir.Constant.gep(buf, [zero(32), zero(32)])
+    else:
+        return builder.gep(buf, [zero(32), zero(32)], True, name)
 
 
 def create_ternary(builder: ir.IRBuilder, condition: ir.Value, 

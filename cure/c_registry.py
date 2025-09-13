@@ -1,3 +1,5 @@
+from logging import info
+
 from llvmlite import ir as lir
 
 from cure.target import Target
@@ -105,6 +107,9 @@ class CRegistry:
             lir.IntType(32), # size
             stream_type # stream
         ]))
+
+        registered_functions_str = ', '.join(self.get_registered_functions())
+        info(f'Registered: {registered_functions_str}')
     
     def get(self, name: str):
         if name not in self.__registry:

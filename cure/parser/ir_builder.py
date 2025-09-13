@@ -187,7 +187,7 @@ class CureIRBuilder(CureVisitor):
     def visitVarAssign(self, ctx):
         return ir.Variable(
             to_pos(ctx), self.scope.type_map.get('any'), ctx.ID().getText(), self.visit(ctx.expr()),
-            ctx.MUTABLE() is not None
+            ctx.MUTABLE() is not None, ctx.op.text if ctx.op is not None else None
         )
     
     def visitWhileStmt(self, ctx):

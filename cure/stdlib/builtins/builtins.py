@@ -34,7 +34,7 @@ class builtins(Lib):
 
             message = ctx.param_value('message')
 
-            ctx.builder.call(puts, [get_struct_value_field(ctx.builder, message, 0)])
+            ctx.builder.call(puts, [get_struct_value_field(ctx.builder, message, 0, 'message_ptr')])
             ctx.builder.call(exit, [lir.Constant(cast(Type, self.scope.type_map.get('int')).type, 1)])
 
         @function(self, [Param(Position.zero(), self.scope.type_map.get('any'), 'x')],
@@ -44,15 +44,15 @@ class builtins(Lib):
 
             x = ctx.param('x')
             x_str = ctx.call(f'{x.type}.to_string', [CallArgument(x.value, x.type)])
-            ctx.builder.call(puts, [get_struct_value_field(ctx.builder, x_str, 0)])
+            ctx.builder.call(puts, [get_struct_value_field(ctx.builder, x_str, 0, 'message_ptr')])
 
             # manually free the string
             # (because the CodeGeneration's memory management does not apply here)
             Ref_type = cast(Type, self.scope.type_map.get('Ref'))
             ref_index = index_of_type(x_str.type, Ref_type.type.as_pointer())
-            ref = ctx.builder.load(get_struct_ptr_field(ctx.builder, x_str, ref_index)) if\
-                isinstance(x_str.type, lir.PointerType) else\
-                get_struct_value_field(ctx.builder, x_str, ref_index)
+            ref = ctx.builder.load(get_struct_ptr_field(ctx.builder, x_str, ref_index), 'Ref_struct')\
+                if isinstance(x_str.type, lir.PointerType) else\
+                get_struct_value_field(ctx.builder, x_str, ref_index, 'Ref_struct')
             ctx.call('Ref.dec', [CallArgument(ref, Ref_type.as_pointer())])
 
         @function(self, [Param(Position.zero(), self.scope.type_map.get('string'), 'x')],
@@ -61,7 +61,7 @@ class builtins(Lib):
             printf = ctx.c_registry.get('printf')
 
             x = ctx.param_value('x')
-            ctx.builder.call(printf, [get_struct_value_field(ctx.builder, x, 0)])
+            ctx.builder.call(printf, [get_struct_value_field(ctx.builder, x, 0, 'message_ptr')])
         
         @function(self, ret_type=self.scope.type_map.get('string'), flags=FunctionFlags(public=True))
         def input(ctx: DefinitionContext):
@@ -75,10 +75,10 @@ class builtins(Lib):
 
             if ctx.scope.target == Target.Windows:
                 acrt_iob_func = ctx.c_registry.get('__acrt_iob_func')
-                stdin = ctx.builder.call(acrt_iob_func, [lir.Constant(lir.IntType(32), 0)])
+                stdin = ctx.builder.call(acrt_iob_func, [lir.Constant(lir.IntType(32), 0)], 'stdin')
             else:
                 stdin_ptr = ctx.c_registry.get_global('stdin')
-                stdin = ctx.builder.load(stdin_ptr)
+                stdin = ctx.builder.load(stdin_ptr, 'stdin')
             
             ctx.builder.call(fgets, [buf, size_const, stdin])
 
@@ -101,10 +101,8 @@ class builtins(Lib):
                 CallArgument(input_len_i32, cast(Type, self.scope.type_map.get('int')))
             ])
         
-        @overload(
-            input, [Param(Position.zero(), self.scope.type_map.get('string'), 'prompt')],
-            self.scope.type_map.get('string')
-        )
+        @overload(input, [Param(Position.zero(), self.scope.type_map.get('string'), 'prompt')],
+                self.scope.type_map.get('string'))
         def input_prompt(ctx: DefinitionContext):
             prompt = ctx.param_value('prompt')
 

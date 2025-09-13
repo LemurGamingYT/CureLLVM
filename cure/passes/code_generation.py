@@ -1,4 +1,4 @@
-from logging import debug, info, warning
+from logging import info, warning
 from typing import cast
 
 from llvmlite import ir as lir, binding as llvm
@@ -34,20 +34,15 @@ class CodeGeneration(CompilerPass):
         self.builder = lir.IRBuilder()
 
         info('Created module and builder')
-        debug(f'Target = {self.module.triple}')
+        info(f'Target = {self.module.triple}')
 
         self.c_registry = CRegistry(self.module, scope)
-
-        registered_functions_str = ', '.join(self.c_registry.get_registered_functions())
-        debug(f'Registered: {registered_functions_str}')
-
-        self.return_value = None
 
         setattr(self.module, 'c_registry', self.c_registry)
     
     def _decrement_reference(self, pos: ir.Position, struct, type: ir.Type):
         Ref = cast(ir.Type, self.scope.type_map.get('Ref'))
-        ref_index = index_of_type(type.type, lir.PointerType(Ref.type))
+        ref_index = index_of_type(type.type, Ref.type.as_pointer())
         if ref_index == -1:
             warning(f'Type {type} needs memory management but has no Ref* field')
             return
@@ -62,7 +57,7 @@ class CodeGeneration(CompilerPass):
     
     def _increment_reference(self, pos: ir.Position, struct, type: ir.Type):
         Ref = cast(ir.Type, self.scope.type_map.get('Ref'))
-        ref_index = index_of_type(type.type, lir.PointerType(Ref.type))
+        ref_index = index_of_type(type.type, Ref.type.as_pointer())
         if ref_index == -1:
             warning(f'Type {type} needs memory management but has no Ref* field')
         else:
@@ -71,12 +66,15 @@ class CodeGeneration(CompilerPass):
                 ir.CallArgument(ref, Ref.as_pointer())
             ])
     
-    def run_on(self, node: ir.Node):
+    def visit(self, node: ir.Node):
+        if isinstance(node, DONT_MANAGE_MEMORY):
+            return super().visit(node)
+
         node_type = node.type
-        if isinstance(node, DONT_MANAGE_MEMORY) or not node_type.needs_memory_management(self.scope):
-            return super().run_on(node)
+        if not node_type.needs_memory_management(self.scope):
+            return super().visit(node)
         
-        value = super().run_on(node)
+        value = super().visit(node)
         if isinstance(value.type, lir.PointerType):
             value = self.builder.load(value)
         
@@ -85,21 +83,21 @@ class CodeGeneration(CompilerPass):
 
         ptr = store_in_pointer(self.builder, node_type.type, value, 'temp_var')
         self.scope.symbol_table.add(ir.Symbol(ptr.name, node_type, ptr))
-        return self.builder.load(ptr, 'temp')
+        return self.builder.load(ptr, 'temp_mem')
     
-    def run_on_Type(self, node: ir.Type):
+    def visit_Type(self, node: ir.Type):
         return node.type
     
-    def run_on_PointerType(self, node: ir.PointerType):
-        return lir.PointerType(self.run_on(node.pointee))
+    def visit_PointerType(self, node: ir.PointerType):
+        return lir.PointerType(self.visit(node.pointee))
 
-    def run_on_ReferenceType(self, node: ir.ReferenceType):
-        return self.run_on_Type(node.target)
+    def visit_ReferenceType(self, node: ir.ReferenceType):
+        return self.visit_Type(node.inner_type)
     
-    def run_on_Program(self, node: ir.Program):
+    def visit_Program(self, node: ir.Program):
         info('Compiling program')
         for n in node.nodes:
-            self.run_on(n)
+            self.visit(n)
         
         return str(self.module)
     
@@ -126,7 +124,7 @@ class CodeGeneration(CompilerPass):
         self.builder.position_at_end(old_builder.block)
         info('Finished cleanup')
     
-    def run_on_Body(self, node: ir.Body):
+    def visit_Body(self, node: ir.Body):
         self.scope = self.scope.clone()
         info('Compiling body')
 
@@ -137,7 +135,7 @@ class CodeGeneration(CompilerPass):
                 self.cleanup(stmt.pos)
                 has_cleaned_up = True
             
-            self.run_on(stmt)
+            self.visit(stmt)
             info(f'Compiled body statement {stmt.__class__.__name__}')
         
         if not has_cleaned_up:
@@ -146,7 +144,7 @@ class CodeGeneration(CompilerPass):
         info('Compiled body')
         self.scope = cast(ir.Scope, self.scope.parent)
     
-    def run_on_If(self, node: ir.If):
+    def visit_If(self, node: ir.If):
         func = self.builder.function
         merge_block = func.append_basic_block('if_merge')
         then_block = func.append_basic_block('if_then')
@@ -161,13 +159,13 @@ class CodeGeneration(CompilerPass):
         else_block = func.append_basic_block('if_else') if node.else_body else merge_block
 
         # Evaluate main condition
-        cond = self.run_on(node.condition)
+        cond = self.visit(node.condition)
         first_elif_test = elif_test_blocks[0] if elif_test_blocks else else_block
         self.builder.cbranch(cond, then_block, first_elif_test)
 
         # THEN block
         self.builder.position_at_end(then_block)
-        then_value = self.run_on(node.body)
+        then_value = self.visit(node.body)
         if not self.builder.block.is_terminated:
             self.builder.branch(merge_block)
         then_end_block = self.builder.block
@@ -179,14 +177,14 @@ class CodeGeneration(CompilerPass):
         for i, elif_node in enumerate(node.elseifs):
             # Test block
             self.builder.position_at_end(elif_test_blocks[i])
-            elif_cond = self.run_on(elif_node.condition)
+            elif_cond = self.visit(elif_node.condition)
 
             next_target = elif_test_blocks[i + 1] if i + 1 < len(elif_test_blocks) else else_block
             self.builder.cbranch(elif_cond, elif_then_blocks[i], next_target)
 
             # Then block for this elif
             self.builder.position_at_end(elif_then_blocks[i])
-            elif_value = self.run_on(elif_node.body)
+            elif_value = self.visit(elif_node.body)
             if not self.builder.block.is_terminated:
                 self.builder.branch(merge_block)
             elif_end_blocks.append(self.builder.block)
@@ -195,7 +193,7 @@ class CodeGeneration(CompilerPass):
         # ELSE block
         if else_block is not merge_block:
             self.builder.position_at_end(else_block)
-            else_value = self.run_on(cast(ir.Body, node.else_body))
+            else_value = self.visit(cast(ir.Body, node.else_body))
             if not self.builder.block.is_terminated:
                 self.builder.branch(merge_block)
             else_end_block = self.builder.block
@@ -218,12 +216,12 @@ class CodeGeneration(CompilerPass):
 
         return None
 
-    def run_on_While(self, node: ir.While):
+    def visit_While(self, node: ir.While):
         def cond(builder):
             old_builder = self.builder
             self.builder = builder
 
-            res = self.run_on(node.condition)
+            res = self.visit(node.condition)
 
             self.builder = old_builder
             return res
@@ -232,20 +230,23 @@ class CodeGeneration(CompilerPass):
             old_builder = self.builder
             self.builder = builder
             
-            self.run_on(node.body)
+            self.visit(node.body)
 
             self.builder = old_builder
 
         create_while_loop(self.builder, cond, body)
     
-    def run_on_Param(self, node: ir.Param):
-        return self.run_on(node.type)
+    def visit_Param(self, node: ir.Param):
+        return self.visit(node.type)
     
-    def run_on_Function(self, node: ir.Function):
+    def visit_Function(self, node: ir.Function):
         info(f'Compiling function {node.name}')
-        ret_type = self.run_on(node.type)
-        param_types = [self.run_on(param) for param in node.params]
+        ret_type = self.visit(node.type)
+        param_types = [self.visit(param) for param in node.params]
         func = lir.Function(self.module, lir.FunctionType(ret_type, param_types), node.name)
+        for i, param in enumerate(node.params):
+            func.args[i].name = param.name
+        
         setattr(func, 'params', node.params)
 
         self.scope.symbol_table.add(ir.Symbol(
@@ -259,9 +260,9 @@ class CodeGeneration(CompilerPass):
             entry_block = func.append_basic_block('entry')
             self.builder = lir.IRBuilder(entry_block)
             if len(node.params) > 0:
-                param_allocation_block = func.append_basic_block('param_allocation')
-                self.builder.position_at_end(param_allocation_block)
-
+                if any(param.is_mutable for param in node.params):
+                    self.builder.comment('initializing mutable parameters')
+                
                 for i, param in enumerate(node.params):
                     param_value = func.args[i]
                     type = param.type
@@ -276,25 +277,13 @@ class CodeGeneration(CompilerPass):
                     self.scope.symbol_table.add(ir.Symbol(
                         param.name, type, param_value, param.is_mutable
                     ))
-                
-                self.builder.branch(entry_block)
-                self.builder.position_at_end(entry_block)
             
-            self.run_on(node.body)
+            self.builder.comment('function body')
+            self.visit(node.body)
 
             if node.type == self.scope.type_map.get('nil'):
                 info(f'{node.name} has no return type, inserting ret NULL')
-                self.return_value = NULL()
-            
-            if self.return_value is None:
-                self.builder.ret_void()
-            else:
-                return_block = self.builder.function.append_basic_block('return')
-                self.builder.branch(return_block)
-                self.builder.position_at_end(return_block)
-
-                self.builder.ret(self.return_value)
-                self.return_value = None
+                self.builder.ret(NULL())
 
             for param in node.params:
                 self.scope.symbol_table.remove(param.name)
@@ -304,8 +293,8 @@ class CodeGeneration(CompilerPass):
         info(f'Finished compiling function {node.name}')
         return func
     
-    def run_on_Variable(self, node: ir.Variable):
-        value = self.run_on(node.value) if node.value is not None else node.value
+    def visit_Variable(self, node: ir.Variable):
+        value = self.visit(node.value) if node.value is not None else node.value
         if value is None:
             node.pos.comptime_error('cannot generate code for uninitialised variables', self.scope.src)
             return
@@ -316,14 +305,14 @@ class CodeGeneration(CompilerPass):
         # it's use because it will never change, it's basically a constant
         if node.is_mutable:
             symbol_value = store_in_pointer(
-                self.builder, self.run_on(node.type), symbol_value, node.name
+                self.builder, self.visit(node.type), symbol_value, f'{node.name}_ptr'
             )
         
         self.scope.symbol_table.add(ir.Symbol(node.name, node.type, symbol_value, node.is_mutable))
         return symbol_value
     
-    def run_on_Assignment(self, node: ir.Assignment):
-        value = self.run_on(node.value)
+    def visit_Assignment(self, node: ir.Assignment):
+        value = self.visit(node.value)
         symbol = cast(ir.Symbol, self.scope.symbol_table.get(node.name))
         if not symbol.is_mutable:
             node.pos.comptime_error(f'\'{node.name}\' is immutable', self.scope.src)
@@ -331,35 +320,31 @@ class CodeGeneration(CompilerPass):
         ptr = symbol.value
         return self.builder.store(value, ptr)
     
-    def run_on_Return(self, node: ir.Return):
-        # if self.return_value is not None:
-        #     node.pos.comptime_error('cannot return twice', self.scope.src)
-        
-        value = self.run_on(node.value)
-        self.return_value = value
+    def visit_Return(self, node: ir.Return):
+        value = self.visit(node.value)
         info(f'Returning {value}')
-        return value
+        return self.builder.ret(value)
     
-    def run_on_Int(self, node: ir.Int):
-        return lir.Constant(self.run_on(node.type), node.value)
+    def visit_Int(self, node: ir.Int):
+        return lir.Constant(self.visit(node.type), node.value)
     
-    def run_on_Float(self, node: ir.Float):
-        return lir.Constant(self.run_on(node.type), node.value)
+    def visit_Float(self, node: ir.Float):
+        return lir.Constant(self.visit(node.type), node.value)
     
-    def run_on_String(self, _):
+    def visit_String(self, _):
         raise NotImplementedError
     
-    def run_on_Bool(self, node: ir.Bool):
-        return lir.Constant(self.run_on(node.type), node.value)
+    def visit_Bool(self, node: ir.Bool):
+        return lir.Constant(self.visit(node.type), node.value)
     
-    def run_on_Nil(self, _):
+    def visit_Nil(self, _):
         return NULL()
     
-    def run_on_StringLiteral(self, node: ir.StringLiteral):
+    def visit_StringLiteral(self, node: ir.StringLiteral):
         s = node.value.encode('utf-8').decode('unicode_escape')
         return create_string_constant(self.module, s)
     
-    def run_on_Id(self, node: ir.Id):
+    def visit_Id(self, node: ir.Id):
         symbol = self.scope.symbol_table.get(node.name)
         if symbol is None:
             return
@@ -371,39 +356,35 @@ class CodeGeneration(CompilerPass):
         info(f'Loading value {node.name}')
         return symbol.value
     
-    def run_on_Call(self, node: ir.Call):
+    def visit_Call(self, node: ir.Call):
         symbol = self.scope.symbol_table.get(node.callee)
         if symbol is None:
             node.pos.comptime_error(f'unknown symbol {node.callee}', self.scope.src)
             return
         
-        args = [self.run_on(arg) for arg in node.args]
+        args = [self.visit(arg) for arg in node.args]
         if isinstance(symbol.value, ir.Function):
-            return symbol.value(node.pos, self.scope, [
-                ir.CallArgument(arg, arg_type) for arg, arg_type in zip(args, [
-                    arg.type for arg in node.args
-                ])
-            ], self.module, self.builder)
+            call_args = [ir.CallArgument(arg, n.type) for arg, n in zip(args, node.args)]
+            return symbol.value(node.pos, self.scope, call_args, self.module, self.builder)
         elif isinstance(symbol.value, lir.Function):
-            ir_func = symbol.value
-            return self.builder.call(ir_func, args, node.callee)
-        else:
-            node.pos.comptime_error(f'invalid callable {node.callee}', self.scope.src)
+            return self.builder.call(symbol.value, args)
+
+        node.pos.comptime_error(f'invalid callable {node.callee}', self.scope.src)
     
-    def run_on_BinaryOp(self, _):
+    def visit_BinaryOp(self, _):
         raise NotImplementedError
     
-    def run_on_UnaryOp(self, _):
+    def visit_UnaryOp(self, _):
         raise NotImplementedError
     
-    def run_on_Attribute(self, _):
+    def visit_Attribute(self, _):
         raise NotImplementedError
     
-    def run_on_Cast(self, _):
+    def visit_Cast(self, _):
         raise NotImplementedError
     
-    def run_on_Ternary(self, node: ir.Ternary):
+    def visit_Ternary(self, node: ir.Ternary):
         return create_ternary(
-            self.builder, self.run_on(node.condition),
-            self.run_on(node.true), self.run_on(node.false)
+            self.builder, self.visit(node.condition),
+            self.visit(node.true), self.visit(node.false)
         )

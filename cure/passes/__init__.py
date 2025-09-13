@@ -11,19 +11,19 @@ class CompilerPass(ABC):
     @classmethod
     def run(cls, scope: Scope, program: Program):
         self = cls(scope)
-        return self.run_on(program)
+        return self.visit(program)
     
-    def run_on(self, node: Node):
-        method_name = f'run_on_{type(node).__name__}'
+    def visit(self, node: Node):
+        method_name = f'visit_{type(node).__name__}'
         if hasattr(self, method_name):
             method = getattr(self, method_name)
             return method(node)
         else:
             raise AttributeError(f'No method {method_name}')
 
-    def run_on_children(self, node: Node):
+    def visit_children(self, node: Node):
         new_node = copy(node)
         for child in new_node.children:
-            child = self.run_on(child)
+            child = self.visit(child)
         
         return new_node
