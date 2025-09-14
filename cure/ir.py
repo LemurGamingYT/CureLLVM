@@ -36,7 +36,7 @@ class Position:
         print(' ' * self.column + '^')
         print(f'{Style.BRIGHT}{Fore.RED}error: {msg}{Style.RESET_ALL}')
         error(msg)
-        raise NotImplementedError
+        # raise NotImplementedError
         sys_exit(1)
 
 # TODO: I don't like this solution ;-;

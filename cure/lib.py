@@ -45,7 +45,7 @@ def function(self: Any, params: list[ir.Param] | None = None, ret_type: ir.Type 
 
             self.scope.symbol_table.add(ir.Symbol(
                 name, self.scope.type_map.get('function'), ir.Function(
-                    ir.Position.zero(), ret_type, name, params, func, flags
+                    ir.Position.zero(), ret_type, name, params, func, flags, func.overloads
                 )
             ))
 
@@ -57,16 +57,16 @@ def function(self: Any, params: list[ir.Param] | None = None, ret_type: ir.Type 
 
 def overload(overload_of: Callable, params: list[ir.Param] | None = None,
              ret_type: ir.Type | None = None, name: str | None = None):
+    self = getattr(overload_of, 'self')
     if params is None:
         params = []
     
     if ret_type is None:
-        ret_type = getattr(overload_of, 'self').scope.type_map.get('nil')
+        ret_type = self.scope.type_map.get('nil')
     
     def decorator(func):
         nonlocal name
         
-        self = overload_of.self
         name = get_method_name(self, name or func.__name__)
 
         func.function = True
@@ -77,13 +77,11 @@ def overload(overload_of: Callable, params: list[ir.Param] | None = None,
         func.overload_of = overload_of
 
         if self is not None:
-            setattr(self, name, func)
-
             overload_of.overloads.append(ir.Function(
                 ir.Position.zero(), ret_type, name, params, func, func.flags
             ))
 
-            info(f'Registered overload {name} (of {overload_of.name})')
+            info(f'Registered overload {name} (overload of {overload_of.name})')
         
         return func
     
